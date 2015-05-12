@@ -162,8 +162,6 @@ pair<vector<vector<vector<Point2f>>>, vector<Mat>>  getStripes(Point2f beginPoin
 
             // Get points for current shift
             currentLoad = sampleEquidistantPointsOnLine(currentBeginPoint, currentEndPoint, pointAmount);
-            //resultPointsArray[sideShiftNumber][lineNumber] = sampleEquidistantPointsOnLine(currentBeginPoint, currentEndPoint, pointAmount);
-            //currentLoad = sampleEquidistantPointsOnLine(currentBeginPoint, currentEndPoint, pointAmount);
 
             for(int pointNumber=0; pointNumber < pointAmount; pointNumber++)
             {
@@ -220,13 +218,9 @@ vector<Point2f> refineBorderPosition( vector<vector<vector<Point2f>>> &coords, v
         // Replicate to make things on the borders constant.
         Sobel( stripes[pointNumber], sobelResult, CV_64F, 0, 1, 3, 1, 0, BORDER_REPLICATE);
 
-        //cout << sobelResult << endl;
-
         // We take only the middle stripe.
         // We used the ones on the border only in order to get good derivatives.
         sobelResultMiddlestripe = sobelResult(Rect(1, 0, 1, sobelResult.size().height));
-
-        //cout << sobelResultMiddlestripe << endl;
 
         Point min_loc, max_loc;
         double min, max;
@@ -235,8 +229,6 @@ vector<Point2f> refineBorderPosition( vector<vector<vector<Point2f>>> &coords, v
         minMaxLoc(sobelResultMiddlestripe, &min, &max, &min_loc, &max_loc);
 
         maxElementPosition = max_loc.y;
-
-        //cout << maxElementPosition << ", " << max << endl;
 
         // If the element is on the border we can't approximate.
         // Therefore, we return the original position.
@@ -273,6 +265,108 @@ vector<Point2f> refineBorderPosition( vector<vector<vector<Point2f>>> &coords, v
     return refinedLocations;
 }
 
+vector<vector<Point2f>> detectMarkers(Mat &frame, bool visualization=false)
+{
+
+    Mat grayFrame;
+    Mat thresholdedBinaryFrame;
+
+    vector<vector<Point2f>> markersCornersPoints;
+
+    vector<vector<Point> > contours;
+    vector<Vec4i> hierarchy;
+
+    cvtColor(frame, grayFrame, CV_BGR2GRAY);
+    threshold( grayFrame, thresholdedBinaryFrame, threshold_value, max_BINARY_value, threshold_type );
+    findContours( thresholdedBinaryFrame, contours, hierarchy, CV_RETR_TREE, CV_CHAIN_APPROX_SIMPLE, Point(0, 0) );
+
+    vector<Point> currentContour;
+    Rect contourBoundingRect;
+    double boundingRectArea;
+
+    for( size_t k = 0; k < contours.size(); k++ )
+    {
+        approxPolyDP(Mat(contours[k]), currentContour, 3, true);
+
+        // Skip if it's not a rectangle.
+        if(currentContour.size() != 4)
+            continue;
+
+        contourBoundingRect = boundingRect( currentContour );
+        boundingRectArea = contourBoundingRect.area();
+
+        // Skip if the area is too small.
+        if(boundingRectArea < 2000)
+            continue;
+
+        vector<Point2f> cornersPoint(4);
+
+        // Find the final edge in order to find intersections later.
+        Point2f currentPointStart = currentContour[3];
+        Point2f currentPointEnd = currentContour[0];
+
+        pair<vector<vector<vector<Point2f>>>, vector<Mat>> result;
+        vector<vector<vector<Point2f>>> stripesCoords;
+        vector<Mat> stripes = result.second;
+        vector<float> previousEdge(4);
+        vector<float> currentEdge(4);
+        vector<Point2f> linePoints;
+
+        // Get intensity stripes and refine the border position.
+        result = getStripes(currentPointStart, currentPointEnd, 20, grayFrame);
+        stripesCoords = result.first;
+        stripes = result.second;
+
+        // Get the points on the edge with corrected position.
+        linePoints = refineBorderPosition( stripesCoords, stripes);
+
+        // Fit a line through the refined points.
+        fitLine(linePoints, previousEdge, CV_DIST_L2, 0, 0.001, 0.001);
+
+        for(int currentEdgeNumber=0; currentEdgeNumber < 4; currentEdgeNumber++)
+        {
+            currentPointStart = currentContour[currentEdgeNumber];
+            currentPointEnd = currentContour[(currentEdgeNumber+1)%4];
+
+            result = getStripes(currentPointStart, currentPointEnd, 20, grayFrame);
+            stripesCoords = result.first;
+            stripes = result.second;
+            linePoints = refineBorderPosition( stripesCoords, result.second);
+
+            fitLine(linePoints, currentEdge, CV_DIST_L2, 0, 0.001, 0.001);
+
+            Point2f currentLineDirection(currentEdge[0], currentEdge[1]);
+            Point2f currentLinePoint(currentEdge[2], currentEdge[3]);
+
+            Point2f previousLineDirection(previousEdge[0], previousEdge[1]);
+            Point2f previousLinePoint(previousEdge[2], previousEdge[3]);
+
+            Point2f corner = findLinesIntersectionPoint(currentLinePoint,
+                                                        currentLineDirection,
+                                                        previousLinePoint,
+                                                        previousLineDirection);
+
+            cornersPoint[currentEdgeNumber] = corner;
+            //cout << corner.x << ", " << corner.y << endl;
+
+            previousEdge = currentEdge;
+
+            if(visualization)
+            {
+                Point2f beginPoint = currentLinePoint + currentLineDirection * 80;
+                Point2f endPoint = currentLinePoint + currentLineDirection * (-80);
+                cout << corner.x << ", " << corner.y << endl;
+                MyLine( frame, beginPoint, endPoint );
+                MyCircle(frame, corner);
+            }
+
+        }
+
+        markersCornersPoints.push_back(cornersPoint);
+    }
+
+    return markersCornersPoints;
+}
 
 
 /* program & OpenGL initialization */
@@ -354,8 +448,8 @@ int main(int, char**)
     if(!cap.isOpened())  // check if we succeeded
         return -1;
 
-    Mat img_final;
-    Mat img_f;
+    Mat grayFrame;
+    Mat thresholdedBinaryFrame;
     namedWindow("edges",1);
     namedWindow("stripes", 1);
     for(;;)
@@ -368,114 +462,18 @@ int main(int, char**)
         vector<Vec4i> hierarchy;
 
         cap >> frame; // get a new frame from camera
-        cvtColor(frame, img_final, CV_BGR2GRAY);
-        threshold( img_final, img_f, threshold_value, max_BINARY_value, threshold_type );
 
-        /// Find contours
-        findContours( img_f, contours, hierarchy, CV_RETR_TREE, CV_CHAIN_APPROX_SIMPLE, Point(0, 0) );
+        vector<vector<Point2f>> result = detectMarkers(frame, false);
 
-        //contours0.resize(contours.size());
-        vector<Point> current_countour;
-        Rect current_rect;
-        double current_area;
-        Point2f current_point_start;
-        Point2f current_point_end;
-        double x, y, step_x, step_y;
-        vector<float> previousEdge(4);
-        vector<float> currentEdge(4);
-        pair<vector<vector<vector<Point2f>>>, vector<Mat>> result;
-        vector<vector<vector<Point2f>>> stripeCoords;
-        vector<Point2f> linePoints;
-
-        for( size_t k = 0; k < contours.size(); k++ )
+        for(int markerNumber = 0; markerNumber < result.size(); markerNumber++)
         {
-            approxPolyDP(Mat(contours[k]), current_countour, 3, true);
+            vector<Point2f> corners = result[markerNumber];
 
-            if(current_countour.size() == 4)
+            for(int cornerNumber = 0; cornerNumber < corners.size(); cornerNumber++)
             {
-                current_rect = boundingRect( current_countour );
-                current_area = current_rect.area();
-                //cout << format("%f\n", current_area);
-
-                // The lower threshold size of rectangle
-                if(current_area > 2000)
-                {
-
-                    current_point_start = current_countour[3];
-                    current_point_end = current_countour[0];
-
-                    result = getStripes(current_point_start, current_point_end, 6, img_final);
-                    stripeCoords = result.first;
-
-                    linePoints = refineBorderPosition( stripeCoords, result.second);
-                    fitLine(linePoints, previousEdge, CV_DIST_L2, 0, 0.01, 0.01);
-
-                    for(int current_edge=0; current_edge < 4; current_edge++)
-                    {
-                        current_point_start = current_countour[current_edge];
-                        current_point_end = current_countour[(current_edge+1)%4];
-
-                        result = getStripes(current_point_start, current_point_end, 8, img_final);
-                        stripeCoords = result.first;
-//
-//                        for(int shiftNumber=0; shiftNumber < stripeCoords.size(); shiftNumber++)
-//                        {
-//                            for(int layerNumber = 0; layerNumber < stripeCoords[shiftNumber].size(); layerNumber++)
-//                            {
-//                                vector<Point2f> linePoints = stripeCoords[shiftNumber][layerNumber];
-//                                for(int step = 0; step < linePoints.size(); step++)
-//                                    MyCircle(frame, linePoints[step]);
-//                            }
-//
-//                        }
-
-
-                            linePoints = refineBorderPosition( stripeCoords, result.second);
-
-                            fitLine(linePoints, currentEdge, CV_DIST_L2, 0, 0.001, 0.001);
-
-                            Point2f currentLineDirection(currentEdge[0], currentEdge[1]);
-                            Point2f currentLinePoint(currentEdge[2], currentEdge[3]);
-
-                            Point2f previousLineDirection(previousEdge[0], previousEdge[1]);
-                            Point2f previousLinePoint(previousEdge[2], previousEdge[3]);
-
-                            Point2f corner = findLinesIntersectionPoint(currentLinePoint,
-                                                        currentLineDirection,
-                                                        previousLinePoint,
-                                                        previousLineDirection);
-
-                            Point2f beginPoint = currentLinePoint + currentLineDirection * 80;
-
-                            Point2f endPoint = currentLinePoint + currentLineDirection * (-80);
-
-                            cout << corner.x << ", " << corner.y << endl;
-
-                            MyLine( frame, beginPoint, endPoint );
-
-                            MyCircle(frame, corner);
-
-                            previousEdge = currentEdge;
-
-//                            cout << "size: " << linePoints.size() << endl;
-//
-//                            for(int step = 0; step < linePoints.size(); step++)
-//                            {
-//                                cout << linePoints[step].x << ":" << linePoints[step].y;
-//                                MyCircle(frame, linePoints[step]);
-//                            }
-
-                    }
-
-//                    MyLine( frame, current_countour[0], current_countour[1] );
-//                    MyLine( frame, current_countour[1], current_countour[2] );
-//                    MyLine( frame, current_countour[2], current_countour[3] );
-//                    MyLine( frame, current_countour[3], current_countour[0] );
-//                    contours0.push_back(current_countour);
-                }
+                MyCircle(frame, corners[cornerNumber]);
             }
         }
-
 
         imshow("edges", frame);
         if(waitKey(30) >= 0) break;
