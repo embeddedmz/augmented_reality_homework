@@ -484,9 +484,16 @@ int main(int, char**)
     Mat image;
 
 
-    image = imread("cat.jpg", CV_LOAD_IMAGE_GRAYSCALE);
+    image = imread("cat.jpg", CV_LOAD_IMAGE_COLOR);
 
-    imshow("cat", image);
+    vector<Point2f> catCoords(4);
+
+    catCoords[0] = Point2f(0, 0);
+    catCoords[1] = Point2f(image.cols, 0);
+    catCoords[2] = Point2f(image.cols, image.rows);
+    catCoords[3] = Point2f(0, image.rows);
+
+    //imshow("cat", image);
 
 //    markerNormalCoords[0] = Point2f(0, 0);
 //    markerNormalCoords[1] = Point2f(200, 0);
@@ -503,6 +510,7 @@ int main(int, char**)
         Mat grayFrame;
 
         cvtColor(frame, grayFrame, CV_BGR2GRAY);
+
 
         visualizationCopy = frame.clone();
         vector<vector<Point2f>> result = detectMarkers(visualizationCopy, true);
@@ -529,30 +537,57 @@ int main(int, char**)
         if(result.size() > 0)
         {
 
+            Mat markerTransformMatrix, markerAlignedOutput, imageToPutTransformMatrix, warpedImageToPutOutput;
+
+            markerAlignedOutput = Mat::zeros( 6, 6, grayFrame.type() );
+
+            for(int markerNumber = 0; markerNumber < result.size(); markerNumber++)
+            {
+
+                vector<Point2f> oneMarker = result[markerNumber];
+
+                markerTransformMatrix = getPerspectiveTransform(oneMarker, markerNormalCoords);
+
+                warpPerspective(grayFrame, markerAlignedOutput, markerTransformMatrix, markerAlignedOutput.size() );
+
+                threshold( markerAlignedOutput, markerAlignedOutput, threshold_value, max_BINARY_value, threshold_type );
+
+                 if(checkMatrixBorderForOnes(markerAlignedOutput))
+                 {
+                    imshow("transform", markerAlignedOutput);
+
+                    Rect boundBox = boundingRect( oneMarker );
+
+                    warpedImageToPutOutput = Mat::zeros( frame.rows, frame.cols, frame.type() );
+
+                    imageToPutTransformMatrix = getPerspectiveTransform(catCoords, oneMarker);
+
+                    warpPerspective(image, warpedImageToPutOutput, imageToPutTransformMatrix, warpedImageToPutOutput.size() );
+
+                    frame = frame + warpedImageToPutOutput;
+                    //imshow("cat", warpedImageToPutOutput + frame);
+                 }
+            }
+
+            //imshow("cat", frame);
 
 
-            Mat transformMatrix, output;
-            output = Mat::zeros( 6, 6, grayFrame.type() );
-            vector<Point2f> oneMarker = result[0];
 
-            //Sort4PointsClockwise(oneMarker);
 
-            transformMatrix = getPerspectiveTransform(oneMarker, markerNormalCoords);
 
-            //cout << transformMatrix << endl;
 
-            warpPerspective(grayFrame, output, transformMatrix,output.size() );
 
-            threshold( output, output, threshold_value, max_BINARY_value, threshold_type );
 
-            if(checkMatrixBorderForOnes(output))
-                imshow("transform", output);
+            //threshold( output, output, threshold_value, max_BINARY_value, threshold_type );
+
+//            if(checkMatrixBorderForOnes(output))
+//                imshow("transform", output);
 
 
         }
 
 
-        imshow("edges", visualizationCopy);
+        imshow("edges", frame);
         if(waitKey(30) >= 0) break;
     }
     // the camera will be deinitialized automatically in VideoCapture destructor
