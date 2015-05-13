@@ -6,6 +6,7 @@
 #include <Eigen/StdVector>
 #include <iostream>
 #include <stdlib.h>
+#include <algorithm>
 
 using namespace std;
 using namespace cv;
@@ -28,6 +29,7 @@ RNG rng(12345);
 
 void MyLine( Mat img, Point start, Point end );
 void MyCircle( Mat img, Point center );
+
 
 int sampleSubPix(const cv::Mat &pSrc, const cv::Point2f &p)
 {
@@ -355,7 +357,6 @@ vector<vector<Point2f>> detectMarkers(Mat &frame, bool visualization=false)
             {
                 Point2f beginPoint = currentLinePoint + currentLineDirection * 80;
                 Point2f endPoint = currentLinePoint + currentLineDirection * (-80);
-                cout << corner.x << ", " << corner.y << endl;
                 MyLine( frame, beginPoint, endPoint );
                 MyCircle(frame, corner);
             }
@@ -431,16 +432,35 @@ void display(GLFWwindow* window, const cv::Mat &img_bgr)
 
 	glRasterPos2i(0, camera_height - 1);
 
-
-    //glDrawPixels(camera_width, camera_height, GL_LUMINANCE, GL_UNSIGNED_SHORT, bkgnd);
 	glDrawPixels(camera_width, camera_height, GL_BGR_EXT, GL_UNSIGNED_BYTE, bkgnd);
-	//glDrawPixels(camera_width, camera_height, GL_LUMINANCE, GL_UNSIGNED_BYTE, bkgnd);
 
 	glPopMatrix();
 
 	glEnable(GL_DEPTH_TEST);
 	glMatrixMode(GL_MODELVIEW);
 }
+
+bool checkMatrixBorderForOnes(Mat& matrixToCheck)
+{
+    int amountOfRows = matrixToCheck.rows;
+    int amountOfCols = matrixToCheck.cols;
+
+    // Check border columns
+    for(int col = 0; col != amountOfCols; col+=amountOfCols)
+        for(int row = 0; row < amountOfRows; row++)
+            if(matrixToCheck.at<uchar>(col, row) != 0)
+                return false;
+
+    // Check border rows
+    for(int row = 0; row != amountOfRows; row+=amountOfRows)
+        for(int col = 0; col < amountOfCols; col++)
+            if(matrixToCheck.at<uchar>(col, row) != 0)
+                return false;
+
+
+    return true;
+}
+
 
 int main(int, char**)
 {
@@ -451,31 +471,88 @@ int main(int, char**)
     Mat grayFrame;
     Mat thresholdedBinaryFrame;
     namedWindow("edges",1);
-    namedWindow("stripes", 1);
+    namedWindow("transform", 1);
+    namedWindow("cat", 1);
+
+    vector<Point2f> markerNormalCoords(4);
+
+    markerNormalCoords[0] = Point2f(-1/2.0, -1/2.0);
+    markerNormalCoords[1] = Point2f(11/2.0, -1/2.0);
+    markerNormalCoords[2] = Point2f(11/2.0, 11/2.0);
+    markerNormalCoords[3] = Point2f(-1/2.0, 11/2.0);
+
+    Mat image;
+
+
+    image = imread("cat.jpg", CV_LOAD_IMAGE_GRAYSCALE);
+
+    imshow("cat", image);
+
+//    markerNormalCoords[0] = Point2f(0, 0);
+//    markerNormalCoords[1] = Point2f(200, 0);
+//    markerNormalCoords[2] = Point2f(200, 200);
+//    markerNormalCoords[3] = Point2f(0, 200);
+
     for(;;)
     {
         Mat frame;
-        Mat stripe;
-        Mat sobel;
-        vector<vector<Point> > contours;
-        vector<vector<Point> > contours0;
-        vector<Vec4i> hierarchy;
+        Mat visualizationCopy;
 
         cap >> frame; // get a new frame from camera
 
-        vector<vector<Point2f>> result = detectMarkers(frame, false);
+        Mat grayFrame;
 
-        for(int markerNumber = 0; markerNumber < result.size(); markerNumber++)
+        cvtColor(frame, grayFrame, CV_BGR2GRAY);
+
+        visualizationCopy = frame.clone();
+        vector<vector<Point2f>> result = detectMarkers(visualizationCopy, true);
+
+
+//        for(int markerNumber = 0; markerNumber < result.size(); markerNumber++)
+//        {
+//            vector<Point2f> corners = result[markerNumber];
+//
+//            for(int cornerNumber = 0; cornerNumber < corners.size(); cornerNumber++)
+//            {
+//                //MyCircle(frame, corners[cornerNumber]);
+//
+//                circle(visualizationCopy,
+//                      corners[cornerNumber],
+//                      1,
+//                      Scalar( 0, 0, 50*cornerNumber + 100 ),
+//                      2,
+//                      8 );
+//
+//            }
+//        }
+
+        if(result.size() > 0)
         {
-            vector<Point2f> corners = result[markerNumber];
 
-            for(int cornerNumber = 0; cornerNumber < corners.size(); cornerNumber++)
-            {
-                MyCircle(frame, corners[cornerNumber]);
-            }
+
+
+            Mat transformMatrix, output;
+            output = Mat::zeros( 6, 6, grayFrame.type() );
+            vector<Point2f> oneMarker = result[0];
+
+            //Sort4PointsClockwise(oneMarker);
+
+            transformMatrix = getPerspectiveTransform(oneMarker, markerNormalCoords);
+
+            //cout << transformMatrix << endl;
+
+            warpPerspective(grayFrame, output, transformMatrix,output.size() );
+
+            threshold( output, output, threshold_value, max_BINARY_value, threshold_type );
+
+            if(checkMatrixBorderForOnes(output))
+                imshow("transform", output);
+
+
         }
 
-        imshow("edges", frame);
+
+        imshow("edges", visualizationCopy);
         if(waitKey(30) >= 0) break;
     }
     // the camera will be deinitialized automatically in VideoCapture destructor
