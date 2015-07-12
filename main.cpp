@@ -30,6 +30,8 @@ RNG rng(12345);
 void MyLine( Mat img, Point start, Point end );
 void MyCircle( Mat img, Point center );
 
+typedef Point2d PVect;
+
 
 int sampleSubPix(const cv::Mat &pSrc, const cv::Point2f &p)
 {
@@ -461,6 +463,129 @@ bool checkMatrixBorderForOnes(Mat& matrixToCheck)
     return true;
 }
 
+Mat rotate_cw(const Mat& image, int degrees)
+{
+    cv::Mat res;
+    switch (degrees % 360) {
+        case 0:
+            res = image;
+            break;
+        case 90:
+            res = image.t();
+            cv::flip(res, res, 1);
+            break;
+        case 180:
+            cv::flip(image, res, -1);
+            break;
+        case 270:
+            res = image.t();
+            cv::flip(res, res, 0);
+            break;
+        default:
+            cv::Mat r = cv::getRotationMatrix2D({image.cols/2.0F, image.rows/2.0F}, degrees, 1.0);
+            int len = std::max(image.cols, image.rows);
+            cv::warpAffine(image, res, r, cv::Size(len, len));
+            break; //image size will change
+    }
+    return res;
+}
+
+PVect computeSpeed(PVect v, double s)
+{
+    // v has values in [-1;+1]
+    double angle = atan2(v.y, v.x);
+    return PVect(s * cos(angle), s * sin(angle));
+}
+
+void drawMargin(Mat& image, int x)
+{
+    line(image, Point(x, 0), Point(x, image.rows),
+            Scalar(0xFF, 0xFF, 0xFF), 2, CV_AA);
+}
+
+PVect processSpeed(PVect v, double dy)
+{
+    double Y = v.y + dy;
+    double norm = sqrt(v.x * v.x + Y * Y);
+    return PVect(-v.x / norm, Y / norm); // -x for the x-bounce
+}
+
+// global variables
+bool smooth = false; //< whether to smooth the camera image
+bool game = false; //< whether the game is running
+bool paused = false; //< running status
+
+bool pollKeys()
+{
+    char c = (char) waitKey(10);
+    if (c == 27) {
+        // we're done, let's exit
+        return false;
+    }
+    // possible key events
+    switch (c) {
+        case 's':
+        case 'g':
+            smooth = !smooth;
+            break;
+        case 'p':
+            paused = !paused;
+            break;
+        default:
+            ;
+    }
+    return true;
+}
+
+void onMouse(int event, int x, int y, int, void*)
+{
+    // the mouse event
+    switch (event) {
+        case CV_EVENT_LBUTTONUP:
+            // we restart the game
+            game = true;
+            break;
+    }
+}
+
+int getMarkerCode(Mat markerMatrix)
+{
+    int id = 0;
+    int currentValue = 0;
+
+    for(int j = 0; j < markerMatrix.rows; j++)
+    {
+        for(int i = 0; i < markerMatrix.cols; i++)
+        {
+            currentValue = int(markerMatrix.at<uchar>(j,i))? 0: 1;
+            id += currentValue *pow(2, ( (markerMatrix.rows - j - 1)*4 + (markerMatrix.cols - i) - 1 ));
+        }
+
+    }
+
+    return id;
+}
+
+pair<int, int> getMarkerSmallestId(Mat markerMatrix)
+{
+    int newCode;
+    int minCode = getMarkerCode(markerMatrix);
+    int rotation = 0;
+    Mat matrix = markerMatrix;
+
+    for(int i = 0; i < 3; i++)
+    {
+        matrix = rotate_cw(matrix, 90);
+        newCode = getMarkerCode(matrix);
+        if(newCode < minCode)
+        {
+            minCode = newCode;
+            rotation = 90 * i;
+        }
+    }
+
+    return pair<int, int>(minCode, rotation);
+}
 
 int main(int, char**)
 {
@@ -468,11 +593,25 @@ int main(int, char**)
     if(!cap.isOpened())  // check if we succeeded
         return -1;
 
+    // game parameters
+    const int margin = 50; //< pixel x-margin
+    const int pingsz = 100; //< ping pong p
+    const int rectsz = 20; //< ball radius
+    const int speed = 10; //< ball velocity
+    PVect recPos; //< the ball position
+    PVect recSpeed; //< the ball speed
+    int win = 0; //< the winner 1=left, 2=right
+    int previousLastLeftPos = 0;
+    int previousLastRightPos = 0;
+    int lastLeftPos = 0;
+    int lastRightPos = 0;
+    const string window = "Marker Ping PONG !";
+
     Mat grayFrame;
     Mat thresholdedBinaryFrame;
-    namedWindow("edges",1);
-    namedWindow("transform", 1);
-    namedWindow("cat", 1);
+    namedWindow(window, 1);
+    //namedWindow("transform", 1);
+    //namedWindow("cat", 1);
 
     vector<Point2f> markerNormalCoords(4);
 
@@ -484,21 +623,30 @@ int main(int, char**)
     Mat image;
 
 
-    image = imread("cat.jpg", CV_LOAD_IMAGE_COLOR);
+    Mat image_bat_one = imread("bat.jpg", CV_LOAD_IMAGE_COLOR);
 
-    vector<Point2f> catCoords(4);
+    vector<Point2f> batOneCoords(4);
 
-    catCoords[0] = Point2f(0, 0);
-    catCoords[1] = Point2f(image.cols, 0);
-    catCoords[2] = Point2f(image.cols, image.rows);
-    catCoords[3] = Point2f(0, image.rows);
+    batOneCoords[0] = Point2f(0, 0);
+    batOneCoords[1] = Point2f(image_bat_one.cols, 0);
+    batOneCoords[2] = Point2f(image_bat_one.cols, image_bat_one.rows);
+    batOneCoords[3] = Point2f(0, image_bat_one.rows);
 
-    //imshow("cat", image);
+    Mat image_bat_two = imread("second_bat.jpg", CV_LOAD_IMAGE_COLOR);
 
-//    markerNormalCoords[0] = Point2f(0, 0);
-//    markerNormalCoords[1] = Point2f(200, 0);
-//    markerNormalCoords[2] = Point2f(200, 200);
-//    markerNormalCoords[3] = Point2f(0, 200);
+    vector<Point2f> batTwoCoords(4);
+
+    batTwoCoords[0] = Point2f(0, 0);
+    batTwoCoords[1] = Point2f(image_bat_two.cols, 0);
+    batTwoCoords[2] = Point2f(image_bat_two.cols, image_bat_two.rows);
+    batTwoCoords[3] = Point2f(0, image_bat_two.rows);
+
+    // we put the ball at the center
+    recPos = PVect(camera_width / 2, camera_height / 2);
+    //recSpeed = PVect(-1.0, 0.0);
+    Scalar leftColor(0x00, 0x00, 0xFF);
+    Scalar rightColor(0xFF, 0x00, 0x00);
+
 
     for(;;)
     {
@@ -516,24 +664,173 @@ int main(int, char**)
         vector<vector<Point2f>> result = detectMarkers(visualizationCopy, true);
 
 
-//        for(int markerNumber = 0; markerNumber < result.size(); markerNumber++)
-//        {
-//            vector<Point2f> corners = result[markerNumber];
-//
-//            for(int cornerNumber = 0; cornerNumber < corners.size(); cornerNumber++)
-//            {
-//                //MyCircle(frame, corners[cornerNumber]);
-//
-//                circle(visualizationCopy,
-//                      corners[cornerNumber],
-//                      1,
-//                      Scalar( 0, 0, 50*cornerNumber + 100 ),
-//                      2,
-//                      8 );
-//
-//            }
-//        }
+        // ### 2 = draw the players
+        drawMargin(frame, margin);
+        Rect pad1(0, std::max(0, lastLeftPos - pingsz), margin, 2 * pingsz);
+        rectangle(frame, pad1, leftColor, CV_FILLED);
 
+        drawMargin(frame, camera_width - margin);
+        // the display range
+        Rect pad2(camera_width - margin, std::max(0, lastRightPos - pingsz),
+                margin, 2 * pingsz);
+        rectangle(frame, pad2, rightColor, CV_FILLED);
+
+        // ### 3 = game logic
+        if (!game) {
+            // we put the ball at the center
+            recPos = PVect(camera_width / 2, camera_height / 2);
+            string title;
+            Scalar color;
+            switch (win) {
+                case 0:
+                    title = "Click to start";
+                    color = Scalar(0x66, 0x66, 0x66);
+                    break;
+                case 1: // left won
+                    title = "Left won !";
+                    color = leftColor;
+                    break;
+                case 2: // right won
+                    title = "Right won !";
+                    color = rightColor;
+                    break;
+            }
+            // we display the title
+            Size textsize = getTextSize(title, CV_FONT_HERSHEY_COMPLEX, 2, 5, 0);
+            Point org((camera_width - textsize.width) / 2, 3 * camera_height / 4);
+            putText(frame, title, org, CV_FONT_HERSHEY_COMPLEX, 2, color, 5, CV_AA);
+        }
+
+        // we draw the ball anyway
+        circle(frame, recPos, rectsz, Scalar(0, 10, 0), CV_FILLED, CV_AA);
+
+        // the game in itself is simple
+        if (game) {
+            // the real thing happens here
+            // 0=check won or not
+            if (recPos.x < rectsz) {
+                // left lost !
+                win = 2;
+                game = false;
+            } else if (camera_width - recPos.x < rectsz) {
+                // right lost !
+                win = 1;
+                game = false;
+            } else {
+                // we compute the ball displacement
+                if (recSpeed.x == 0) {
+                    // we reset the direction
+                    recSpeed = PVect(1.0, 0.0);
+                }
+
+                // the new position
+                PVect v = computeSpeed(recSpeed, speed);
+                recPos = recPos + v;
+
+                // computation of the new speed
+                PVect nextPos = recPos + v;
+                if (nextPos.x < margin + rectsz) {
+                    // check for x-bounce on left
+                    if (abs(lastLeftPos - nextPos.y) < pingsz + 0.75 * rectsz) {
+                        // we bounce !
+                        // we use the history to check the pad "speed"
+                        // orientation and put that in the ball new speed
+                        int disp = lastLeftPos - previousLastLeftPos;
+                        double orient = disp / double(camera_height); // div by disp.t ?
+                        orient *= 5.0;
+                        // => unit vector of (0,orient) + recSpeed
+                        recSpeed = processSpeed(recSpeed + PVect(-1.0, 0.0), orient);
+                    }
+                } else if (camera_width - nextPos.x < margin + rectsz) {
+                    // check for x-bounce on right
+                    if (abs(lastRightPos - nextPos.y) < pingsz + 0.75 * rectsz) {
+                        // we bounce !
+                        int disp = lastRightPos - previousLastRightPos;
+                        double orient = disp / double(camera_height); // div by disp.t ?
+                        orient *= 5.0;
+                        recSpeed = processSpeed(recSpeed + PVect(1.0, 0.0), orient);
+                    }
+                }
+                if (nextPos.y < 0 || nextPos.y > camera_height) {
+                    // y-bounce
+                    recSpeed = PVect(recSpeed.x, -recSpeed.y);
+                }
+            }
+        }
+
+        for(int markerCount = 0; markerCount < result.size(); markerCount++)
+        {
+
+            Mat transformMatrix, output;
+            output = Mat::zeros( 6, 6, grayFrame.type() );
+            vector<Point2f> oneMarker = result[markerCount];
+
+            //Sort4PointsClockwise(oneMarker);
+
+            transformMatrix = getPerspectiveTransform(oneMarker, markerNormalCoords);
+
+            //cout << transformMatrix << endl;
+
+            warpPerspective(grayFrame, output, transformMatrix,output.size() );
+
+            threshold( output, output, threshold_value, 1, threshold_type );
+
+            if(checkMatrixBorderForOnes(output))
+            {
+                output = output(Range(1, 5), Range(1,5));
+
+                pair<int, int> container = getMarkerSmallestId(output);
+                int id = container.first;
+                int rotation = container.second;
+
+                if(id == 0x005A)
+                {
+                    //imshow("transform", output*100);
+                    Point2f averagePoint = (oneMarker[0] + oneMarker[1] + oneMarker[2] + oneMarker[3])*0.25;
+                    circle(frame, averagePoint, rectsz, Scalar(0, 10, 30), CV_FILLED, CV_AA);
+                    previousLastLeftPos = lastLeftPos;
+                    lastLeftPos = averagePoint.y;
+
+                    Rect boundBox = boundingRect( oneMarker );
+
+                    Mat warpedImageToPutOutput = Mat::zeros( frame.rows, frame.cols, frame.type() );
+
+                    Mat imageToPutTransformMatrix = getPerspectiveTransform(batOneCoords, oneMarker);
+
+                    Mat new_img = rotate_cw(image_bat_one, rotation);
+
+                    warpPerspective(new_img, warpedImageToPutOutput, imageToPutTransformMatrix, warpedImageToPutOutput.size() );
+
+                    frame = frame + warpedImageToPutOutput;
+                }
+
+                if(id == 0x0690)
+                {
+                    //imshow("transform", output*100);
+                    Point2f averagePoint = (oneMarker[0] + oneMarker[1] + oneMarker[2] + oneMarker[3])*0.25;
+                    circle(frame, averagePoint, rectsz, Scalar(60, 10, 30), CV_FILLED, CV_AA);
+                    previousLastRightPos = lastRightPos;
+                    lastRightPos = averagePoint.y;
+
+                    Rect boundBox = boundingRect( oneMarker );
+
+                    Mat warpedImageToPutOutput = Mat::zeros( frame.rows, frame.cols, frame.type() );
+
+                    Mat imageToPutTransformMatrix = getPerspectiveTransform(batTwoCoords, oneMarker);
+
+                    Mat new_img = rotate_cw(image_bat_two, rotation);
+
+                    warpPerspective(new_img, warpedImageToPutOutput, imageToPutTransformMatrix, warpedImageToPutOutput.size() );
+
+                    frame = frame + warpedImageToPutOutput;
+                }
+
+                //cout << getMarkerSmallestId(output) << ";" << endl;
+            }
+
+        }
+
+        /*
         if(result.size() > 0)
         {
 
@@ -565,29 +862,22 @@ int main(int, char**)
                     warpPerspective(image, warpedImageToPutOutput, imageToPutTransformMatrix, warpedImageToPutOutput.size() );
 
                     frame = frame + warpedImageToPutOutput;
-                    //imshow("cat", warpedImageToPutOutput + frame);
                  }
             }
 
-            //imshow("cat", frame);
+        }
+        */
 
 
+        imshow(window, frame);
 
+        setMouseCallback(window, onMouse, 0);
 
-
-
-
-
-            //threshold( output, output, threshold_value, max_BINARY_value, threshold_type );
-
-//            if(checkMatrixBorderForOnes(output))
-//                imshow("transform", output);
-
-
+        // check keyboard events
+        if (!pollKeys()) {
+            break;
         }
 
-
-        imshow("edges", frame);
         if(waitKey(30) >= 0) break;
     }
     // the camera will be deinitialized automatically in VideoCapture destructor
